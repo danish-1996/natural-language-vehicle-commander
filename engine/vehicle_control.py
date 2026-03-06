@@ -28,15 +28,15 @@ logger = logging.getLogger("vehicle_control")
 # ── Control Parameters ─────────────────────────────────────────────────────────
 
 # How often the control loop ticks (seconds)
-CONTROL_LOOP_HZ     = 20          # 20 updates per second
+CONTROL_LOOP_HZ     = 5           # 5 updates per second — let physics settle
 CONTROL_INTERVAL    = 1.0 / CONTROL_LOOP_HZ
 
 # Throttle ramp speed — how much throttle increases per tick (smooth acceleration)
-THROTTLE_RAMP_RATE  = 0.05        # 0→1 in ~1 second
-BRAKE_RAMP_RATE     = 0.15        # brakes apply faster than throttle
+THROTTLE_RAMP_RATE  = 0.02        # 0→1 in ~2.5 seconds (smoother)
+BRAKE_RAMP_RATE     = 0.08        # smoother braking
 
 # Steering values per intent
-STEER_TURN          = 0.4         # moderate turn — not too sharp
+STEER_TURN          = 0.3         # gentle turn — less jerky
 STEER_STRAIGHT      = 0.0
 
 # Maximum throttle cap (prevents uncontrolled high speeds)
@@ -167,6 +167,7 @@ class VehicleController:
                 brake=brake,
                 reverse=reverse,
             )
+            self._client.update_spectator()
 
             # Tick at fixed rate
             elapsed = time.monotonic() - start
@@ -181,104 +182,33 @@ class VehicleController:
         urgency:      str,
     ) -> tuple[float, float, float, bool]:
         """
-        Map an intent + speed_target + urgency → (throttle, steer, brake, reverse).
-
-        Returns:
-            Tuple of (throttle, steer, brake, reverse)
+        Proportional controller (P-controller) for smooth speed regulation.
+        throttle/brake = Kp * speed_error — simple, stable, no oscillation.
         """
-        reverse = False
-
         # ── STOP ──────────────────────────────────────────────────────────────
         if intent == "stop":
-            brake_value = 1.0 if urgency == "immediate" else self._ramp_brake()
-            self._current_throttle = 0.0
-            self._current_brake    = brake_value
-            return 0.0, STEER_STRAIGHT, brake_value, False
+            return 0.0, STEER_STRAIGHT, 1.0 if urgency == "immediate" else 0.5, False
 
-        # ── UNKNOWN — hold current state (do nothing) ──────────────────────────
+        # ── UNKNOWN — hold state safely ────────────────────────────────────────
         if intent == "unknown":
             return 0.0, STEER_STRAIGHT, 0.0, False
 
-        # ── REVERSE ───────────────────────────────────────────────────────────
-        if intent == "reverse":
-            target_throttle = self._speed_to_throttle(speed_target or 10)
-            throttle = self._ramp_throttle(target_throttle, urgency)
-            self._current_brake = 0.0
-            return throttle, STEER_STRAIGHT, 0.0, True
-
-        # ── DRIVE ─────────────────────────────────────────────────────────────
-        if intent == "drive":
-            target_throttle = self._speed_to_throttle(speed_target)
-            throttle = self._ramp_throttle(target_throttle, urgency)
-            self._current_brake = 0.0
-            return throttle, STEER_STRAIGHT, 0.0, False
-
-        # ── TURN LEFT ─────────────────────────────────────────────────────────
+        # ── Steer by intent ────────────────────────────────────────────────────
         if intent == "turn_left":
-            target_throttle = self._speed_to_throttle(speed_target or 20)
-            throttle = self._ramp_throttle(target_throttle, urgency)
-            self._current_brake = 0.0
-            return throttle, -STEER_TURN, 0.0, False
-
-        # ── TURN RIGHT ────────────────────────────────────────────────────────
-        if intent == "turn_right":
-            target_throttle = self._speed_to_throttle(speed_target or 20)
-            throttle = self._ramp_throttle(target_throttle, urgency)
-            self._current_brake = 0.0
-            return throttle, +STEER_TURN, 0.0, False
-
-        # Fallback — unknown intent defaults to safe stop
-        logger.warning(f"Unhandled intent '{intent}' — defaulting to stop.")
-        return 0.0, STEER_STRAIGHT, 1.0, False
-
-    # ── Helper: Speed → Throttle ───────────────────────────────────────────────
-
-    def _speed_to_throttle(self, speed_kmh: int) -> float:
-        """
-        Convert a target speed in km/h to a base throttle value
-        using the SPEED_THROTTLE_MAP lookup table with linear interpolation.
-        """
-        if speed_kmh <= 0:
-            return 0.0
-        if speed_kmh >= 120:
-            return MAX_THROTTLE
-
-        # Find surrounding entries in the map
-        speeds  = sorted(SPEED_THROTTLE_MAP.keys())
-        for i in range(len(speeds) - 1):
-            lo, hi = speeds[i], speeds[i + 1]
-            if lo <= speed_kmh <= hi:
-                # Linear interpolation
-                t = (speed_kmh - lo) / (hi - lo)
-                return SPEED_THROTTLE_MAP[lo] + t * (
-                    SPEED_THROTTLE_MAP[hi] - SPEED_THROTTLE_MAP[lo]
-                )
-        return MAX_THROTTLE
-
-    # ── Helper: Smooth Ramps ───────────────────────────────────────────────────
-
-    def _ramp_throttle(self, target: float, urgency: str) -> float:
-        """
-        Gradually ramp throttle toward target (smooth acceleration).
-        Immediate urgency jumps directly to target.
-        """
-        if urgency == "immediate":
-            self._current_throttle = target
+            steer = -STEER_TURN
+        elif intent == "turn_right":
+            steer = +STEER_TURN
         else:
-            if self._current_throttle < target:
-                self._current_throttle = min(
-                    self._current_throttle + THROTTLE_RAMP_RATE, target
-                )
-            else:
-                self._current_throttle = max(
-                    self._current_throttle - THROTTLE_RAMP_RATE, target
-                )
-        return round(self._current_throttle, 3)
+            steer = STEER_STRAIGHT
 
-    def _ramp_brake(self) -> float:
-        """Gradually ramp brake toward 1.0 for smooth stops."""
-        self._current_brake = min(self._current_brake + BRAKE_RAMP_RATE, 1.0)
-        return round(self._current_brake, 3)
+        reverse = (intent == "reverse")
+
+        # ── Fixed throttle lookup — no feedback, no oscillation ────────────────
+        # Simply map speed target → fixed throttle and hold it.
+        # CARLA physics + road friction naturally stabilise the speed.
+        throttle = min(speed_target / 120.0 * MAX_THROTTLE, MAX_THROTTLE)
+
+        return round(throttle, 3), steer, 0.0, reverse
 
 
 # ── Quick test harness ─────────────────────────────────────────────────────────

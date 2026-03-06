@@ -279,6 +279,48 @@ class CARLAClient:
             return None
         return self._vehicle.get_transform()
 
+    def update_spectator(self) -> None:
+        """
+        Smoothly follow the ego vehicle using linear interpolation (lerp).
+        Instead of snapping the spectator to the exact position each tick,
+        we blend 10% toward the target — this eliminates camera jitter.
+        """
+        if not self._vehicle or not self._world:
+            return
+
+        transform = self._vehicle.get_transform()
+        fwd       = transform.get_forward_vector()
+        spectator = self._world.get_spectator()
+
+        # Compute ideal target position (8m behind, 4m above)
+        target_loc = carla.Location(
+            x=transform.location.x - 8 * fwd.x,
+            y=transform.location.y - 8 * fwd.y,
+            z=transform.location.z + 4,
+        )
+        target_rot = carla.Rotation(pitch=-20, yaw=transform.rotation.yaw)
+
+        # Lerp current spectator position → target (10% per tick = smooth follow)
+        current = spectator.get_transform()
+        alpha   = 0.1  # smoothing factor — lower = smoother but more lag
+
+        smoothed_loc = carla.Location(
+            x=current.location.x + alpha * (target_loc.x - current.location.x),
+            y=current.location.y + alpha * (target_loc.y - current.location.y),
+            z=current.location.z + alpha * (target_loc.z - current.location.z),
+        )
+
+        # Yaw lerp — handle wrap-around at ±180°
+        yaw_diff = target_rot.yaw - current.rotation.yaw
+        if yaw_diff > 180:  yaw_diff -= 360
+        if yaw_diff < -180: yaw_diff += 360
+        smoothed_yaw = current.rotation.yaw + alpha * yaw_diff
+
+        spectator.set_transform(carla.Transform(
+            smoothed_loc,
+            carla.Rotation(pitch=-20, yaw=smoothed_yaw)
+        ))
+
     # ── Cleanup ────────────────────────────────────────────────────────────────
 
     def cleanup(self) -> None:
