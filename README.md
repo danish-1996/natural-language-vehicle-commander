@@ -20,14 +20,16 @@ This project is fully **privacy-preserving** — no API keys, no cloud calls. Ev
 
 ---
 
-## 🎬 Demo
-
-> *(Demo GIF coming soon — recording in progress)*
+## 💡 How It Works
 
 ```
 User: "Hit the brakes right now!"
-LLM:  {"intent": "stop", "speed_target": 0, "urgency": "immediate"}
-Car:  carla.VehicleControl(brake=1.0, throttle=0.0)  ✅
+  → LLM:  {"intent": "stop", "speed_target": 0, "urgency": "immediate"}
+  → Car:  carla.VehicleControl(brake=1.0, throttle=0.0)  ✅
+
+User: "Turn left slowly"
+  → LLM:  {"intent": "turn_left", "speed_target": 10, "urgency": "normal"}
+  → Car:  carla.VehicleControl(throttle=0.08, steer=-0.3)  ✅
 ```
 
 ---

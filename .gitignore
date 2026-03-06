@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+
+# Virtual environments
+venv/
+venv312/
+nlvc/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# CARLA outputs
+test_frame.png
+*.png
+*.jpg
+
+# OS
+.DS_Store
+Thumbs.db
